@@ -1,0 +1,2 @@
+export const RESERVATION_TTL_SECONDS = 10 * 60;
+export const IDEMPOTENCY_TTL_SECONDS = 24 * 60 * 60;
