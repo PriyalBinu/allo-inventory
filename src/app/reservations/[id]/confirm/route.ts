@@ -1,61 +1,58 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { withIdempotency } from "@/lib/idempotency";
 
 export async function POST(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
-  const idempotencyKey = req.headers.get("idempotency-key");
+  try {
+    const { id } = await params;
 
-  const { body: responseBody, statusCode } = await withIdempotency(idempotencyKey, async () => {
-    try {
-      const result = await prisma.$transaction(async (tx) => {
-        const reservation = await tx.reservation.findUnique({ where: { id: params.id } });
+    const result = await prisma.$transaction(async (tx) => {
+      const reservation = await tx.reservation.findUnique({ where: { id } });
 
-        if (!reservation) throw new Error("NOT_FOUND");
-        if (reservation.status !== "PENDING") throw new Error(`WRONG_STATUS:${reservation.status}`);
+      if (!reservation) throw new Error("NOT_FOUND");
+      if (reservation.status !== "PENDING") throw new Error(`WRONG_STATUS:${reservation.status}`);
 
-        if (new Date() > reservation.expiresAt) {
-          await tx.$executeRaw`
-            UPDATE "Stock" SET reserved = reserved - ${reservation.quantity}
-            WHERE "productId" = ${reservation.productId} AND "warehouseId" = ${reservation.warehouseId}
-          `;
-          await tx.reservation.update({ where: { id: params.id }, data: { status: "RELEASED" } });
-          throw new Error("EXPIRED");
-        }
-
+      if (new Date() > reservation.expiresAt) {
         await tx.$executeRaw`
-          UPDATE "Stock"
-          SET reserved = reserved - ${reservation.quantity},
-              total    = total    - ${reservation.quantity}
+          UPDATE "Stock" SET reserved = reserved - ${reservation.quantity}
           WHERE "productId" = ${reservation.productId} AND "warehouseId" = ${reservation.warehouseId}
         `;
-
-        return tx.reservation.update({
-          where: { id: params.id },
-          data: { status: "CONFIRMED" },
-          include: {
-            product: { select: { name: true, sku: true, price: true } },
-            warehouse: { select: { name: true, location: true } },
-          },
-        });
-      });
-
-      return { body: result, statusCode: 200 };
-    } catch (err) {
-      if (err instanceof Error) {
-        if (err.message === "NOT_FOUND") return { body: { error: "Reservation not found" }, statusCode: 404 };
-        if (err.message === "EXPIRED") return { body: { error: "Reservation has expired" }, statusCode: 410 };
-        if (err.message.startsWith("WRONG_STATUS:")) {
-          const status = err.message.split(":")[1];
-          return { body: { error: `Reservation is already ${status.toLowerCase()}` }, statusCode: 409 };
-        }
+        await tx.reservation.update({ where: { id }, data: { status: "RELEASED" } });
+        throw new Error("EXPIRED");
       }
-      console.error("[POST confirm]", err);
-      return { body: { error: "Failed to confirm reservation" }, statusCode: 500 };
-    }
-  });
 
-  return NextResponse.json(responseBody, { status: statusCode });
+      await tx.$executeRaw`
+        UPDATE "Stock"
+        SET reserved = reserved - ${reservation.quantity},
+            total    = total    - ${reservation.quantity}
+        WHERE "productId" = ${reservation.productId} AND "warehouseId" = ${reservation.warehouseId}
+      `;
+
+      return tx.reservation.update({
+        where: { id },
+        data: { status: "CONFIRMED" },
+        include: {
+          product: { select: { name: true, sku: true, price: true } },
+          warehouse: { select: { name: true, location: true } },
+        },
+      });
+    });
+
+    return NextResponse.json(result);
+  } catch (err) {
+    if (err instanceof Error) {
+      if (err.message === "NOT_FOUND")
+        return NextResponse.json({ error: "Reservation not found" }, { status: 404 });
+      if (err.message === "EXPIRED")
+        return NextResponse.json({ error: "Reservation has expired" }, { status: 410 });
+      if (err.message.startsWith("WRONG_STATUS:")) {
+        const status = err.message.split(":")[1];
+        return NextResponse.json({ error: `Reservation is already ${status.toLowerCase()}` }, { status: 409 });
+      }
+    }
+    console.error("[POST confirm]", err);
+    return NextResponse.json({ error: "Failed to confirm reservation" }, { status: 500 });
+  }
 }

@@ -3,11 +3,12 @@ import { prisma } from "@/lib/prisma";
 
 export async function POST(
   _req: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     const result = await prisma.$transaction(async (tx) => {
-      const reservation = await tx.reservation.findUnique({ where: { id: params.id } });
+      const reservation = await tx.reservation.findUnique({ where: { id } });
 
       if (!reservation) throw new Error("NOT_FOUND");
       if (reservation.status !== "PENDING") throw new Error(`WRONG_STATUS:${reservation.status}`);
@@ -18,7 +19,7 @@ export async function POST(
       `;
 
       return tx.reservation.update({
-        where: { id: params.id },
+        where: { id },
         data: { status: "RELEASED" },
         include: {
           product: { select: { name: true, sku: true, price: true } },
